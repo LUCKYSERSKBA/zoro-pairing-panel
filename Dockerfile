@@ -1,13 +1,13 @@
 FROM node:20-alpine
 
-# Alpine-ൽ പൈത്തണും മേക്ക് ഫയലുകളും ഇൻസ്റ്റാൾ ചെയ്യുക (Error ഒഴിവാക്കാൻ)
-RUN apk add --no-cache python3 make g++
+# Install Python, build tools, and FFmpeg on Alpine (Required for Shazam & media processing)
+RUN apk add --no-cache python3 make g++ ffmpeg
 
 WORKDIR /app
 
 COPY package*.json ./
 
-# Python ചെക്ക് ഒഴിവാക്കാനുള്ള എൻവയോൺമെന്റ് സെറ്റിങ്
+# Environment setting to skip python check for youtube downloader
 ENV YOUTUBE_DL_SKIP_PYTHON_CHECK=1
 
 RUN npm install
