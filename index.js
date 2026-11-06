@@ -6,6 +6,15 @@ const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
 
+// 🌟 GLOBAL CRASH PROTECTION (SIGTERM & Uncaught Exception Handlers)
+process.on('uncaughtException', (err) => {
+    console.error('⚠️ Uncaught Exception intercepted safely: ', err.message || err);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('⚠️ Unhandled Rejection intercepted safely at: ', promise, ' reason: ', reason);
+});
+
 const app = express();
 const PORT = process.env.SERVER_PORT || process.env.PORT || 8000;
 
@@ -327,12 +336,12 @@ async function startZoroSession(phone, res = null) {
         });
 
         // ============================================
-        // MESSAGE UPSERT (DIRECT & FAST WITHOUT QUEUE)
+        // MESSAGE UPSERT (WITH SAFETY TRY-CATCH)
         // ============================================
         sock.ev.on('messages.upsert', async chatUpdate => {
             try {
                 const mek = chatUpdate.messages[0];
-                if (!mek.message) return;
+                if (!mek || !mek.message) return;
                 
                 if (mek.key && mek.key.remoteJid === 'status@broadcast') {
                     if (typeof handleStatus === 'function') await handleStatus(sock, chatUpdate);
@@ -343,7 +352,7 @@ async function startZoroSession(phone, res = null) {
                     await handleMessages(sock, chatUpdate, true);
                 }
             } catch (err) {
-                console.error("Error in messages.upsert:", err);
+                console.error("Error in messages.upsert (Safe Handled):", err.message || err);
             }
         });
 
@@ -351,7 +360,7 @@ async function startZoroSession(phone, res = null) {
             try {
                 if (typeof handleGroupParticipantUpdate === 'function') await handleGroupParticipantUpdate(sock, update);
             } catch (err) {
-                console.error("Error in group-participants.update:", err);
+                console.error("Error in group-participants.update:", err.message || err);
             }
         });
 
@@ -432,7 +441,7 @@ app.get('/', (req, res) => {
     `);
 });
 
-// Ping endpoint for uptime monitoring (Render / UptimeRobot)
+// Ping endpoint for uptime monitoring (Render / Koyeb / UptimeRobot)
 app.get('/ping', (req, res) => {
     res.status(200).json({ status: 'active', uptime: process.uptime() });
 });
