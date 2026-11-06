@@ -184,54 +184,13 @@ async function checkAndInstallFFmpeg() {
 }
 
 // ============================================
-// QUEUE SYSTEM ONLY FOR MENU & ALIVE (WITH 3s DELAY)
-// ============================================
-const activeSessions = {};
-const sessionQueues = {};
-
-async function processQueue(phone, sock) {
-    if (!sessionQueues[phone]) return;
-    if (sessionQueues[phone].isProcessing) return;
-    sessionQueues[phone].isProcessing = true;
-
-    while (sessionQueues[phone].queue.length > 0) {
-        const { currentSock, currentUpdate } = sessionQueues[phone].queue.shift();
-        try {
-            const mek = currentUpdate.messages[0];
-            if (!mek.message) continue;
-            
-            const { handleMessages, handleStatus } = require('./main');
-            if (mek.key && mek.key.remoteJid === 'status@broadcast') {
-                if (typeof handleStatus === 'function') await handleStatus(currentSock, currentUpdate);
-                continue;
-            }
-            if (typeof handleMessages === 'function') {
-                await handleMessages(currentSock, currentUpdate, true);
-            }
-        } catch (err) {
-            console.error("Queue Processing Error:", err.message);
-        }
-
-        if (global.gc) {
-            try { global.gc(); } catch (e) {}
-        }
-
-        // മെനുവിനും അലൈവിനും ഇടയിൽ മാത്രം 3 സെക്കൻഡ് ഡിലേ
-        await new Promise(resolve => setTimeout(resolve, 3000));
-    }
-    sessionQueues[phone].isProcessing = false;
-}
-
-// ============================================
 // UNIFIED ROBUST MULTI-SESSION RUNNER & PAIRING
 // ============================================
+const activeSessions = {};
+
 async function startZoroSession(phone, res = null) {
     const sessionName = `session_${phone}`;
     const sessionPath = path.join(SESSIONS_DIR, sessionName);
-
-    if (!sessionQueues[phone]) {
-        sessionQueues[phone] = { queue: [], isProcessing: false };
-    }
 
     try {
         const { default: makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion, makeCacheableSignalKeyStore, DisconnectReason } = require('@aadhixd777/baileys');
@@ -307,20 +266,20 @@ async function startZoroSession(phone, res = null) {
                         const connectMessage = `
 \`ᴢᴏʀᴏxᴍᴅ -ᴍɪɴɪ sᴛᴀʀᴛᴇᴅ\`
 ╭═══════════════⟥⟢
-➦ ᴠᴇʀsᴏɴ : 0.0.1
-➦ ᴘʀᴇᴍɪx : [.]
+➦ ᴠᴇʀsɪᴏɴ : 0.0.1
+➦ ᴘʀᴇғɪx : [.]
 ➦ ᴍᴏᴅᴇ : ${mode}
 ➦ ᴏᴡɴᴇʀ : 918136880986
 ╰═══════════════⟥⟢
 \`ʙᴀsɪᴄ - ᴄᴏᴍᴍᴀɴᴅs\`
 ╭═══════════════⟥⟢
-➦ .ᴘɪɴɢ - sᴇᴇ ᱨᱮsᴘᴏɴᴄᴇ sᴘᴇᴇᴅ
-➦ .ᴍᴇɴᴜ - ᴛᴏ sᴀᴡ ᱟʟʟ ᴄᴍᴅs
+➦ .ᴘɪɴɢ - sᴇᴇ ʀᴇsᴘᴏɴsᴇ sᴘᴇᴇᴅ
+➦ .ᴍᴇɴᴜ - ᴛᴏ sʜᴏᴡ ᴀʟʟ ᴄᴍᴅs
 ➦ .ᴀʟɪᴠᴇ - sᴇᴇ ʙᴏᴛ ᱨᴜɴᴛɪᴍᴇ
 ➦ .ᴏᴡɴᴇʀ - ᴅᴇᴠᴇʟᴏᴘᴇʀ ᴏғ ʙᴏᴛ
 ➦ .ᴘᴀɪʀ - ᴄᴏɴɴᴇᴄᴛ ᴛʜᴇ ʙᴏᴛ
 ╰═══════════════⟥⟢
-\`ᴀʙᴏᴜᴛ ᴛʜɪs xᴍᴅ ʙᴏᴛ\`
+\`ᴀʙᴏᴜᴛ ᴛʜɪs ᴍᴅ ʙᴏᴛ\`
 ╭═══════════════⟥⟢
 ➦ ᴅᴀᴛᴇ : ${currentDate}
 ➦ ᴛɪᴍᴇ : ${currentTime}
@@ -368,35 +327,20 @@ async function startZoroSession(phone, res = null) {
         });
 
         // ============================================
-        // MESSAGE UPSERT (MENU & ALIVE QUEUED, OTHERS SMOOTH)
+        // MESSAGE UPSERT (DIRECT & FAST WITHOUT QUEUE)
         // ============================================
         sock.ev.on('messages.upsert', async chatUpdate => {
             try {
                 const mek = chatUpdate.messages[0];
                 if (!mek.message) return;
                 
-                const text = (
-                    mek.message?.conversation || 
-                    mek.message?.extendedTextMessage?.text || 
-                    mek.message?.imageMessage?.caption || 
-                    mek.message?.videoMessage?.caption || 
-                    ''
-                ).toLowerCase().trim();
-
-                // .menu അല്ലെങ്കിൽ .alive കമാൻഡുകൾ വന്നാൽ മാത്രം ക്യൂവിലേക്ക് വിടും
-                if (text.startsWith('.menu') || text.startsWith('.alive') || text.startsWith('.help')) {
-                    if (!sessionQueues[phone]) {
-                        sessionQueues[phone] = { queue: [], isProcessing: false };
-                    }
-                    sessionQueues[phone].queue.push({ currentSock: sock, currentUpdate: chatUpdate });
-                    processQueue(phone, sock);
-                } else {
-                    // ബാക്കി എല്ലാ മെസ്സേജുകളും കമാൻഡുകളും പഴയപോലെ ഡയറക്ട് സ്മൂത്ത് ആയി വർക്ക് ചെയ്യും
-                    if (mek.key && mek.key.remoteJid === 'status@broadcast') {
-                        if (typeof handleStatus === 'function') await handleStatus(sock, chatUpdate);
-                        return;
-                    }
-                    if (typeof handleMessages === 'function') await handleMessages(sock, chatUpdate, true);
+                if (mek.key && mek.key.remoteJid === 'status@broadcast') {
+                    if (typeof handleStatus === 'function') await handleStatus(sock, chatUpdate);
+                    return;
+                }
+                
+                if (typeof handleMessages === 'function') {
+                    await handleMessages(sock, chatUpdate, true);
                 }
             } catch (err) {
                 console.error("Error in messages.upsert:", err);
@@ -411,6 +355,7 @@ async function startZoroSession(phone, res = null) {
             }
         });
 
+        activeSessions[phone] = sock;
         return sock;
     } catch (e) {
         console.error(`❌ Error in session for ${phone}:`, e);
@@ -485,6 +430,11 @@ app.get('/', (req, res) => {
         </body>
         </html>
     `);
+});
+
+// Ping endpoint for uptime monitoring (Render / UptimeRobot)
+app.get('/ping', (req, res) => {
+    res.status(200).json({ status: 'active', uptime: process.uptime() });
 });
 
 // ============================================
