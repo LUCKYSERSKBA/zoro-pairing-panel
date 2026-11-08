@@ -6,7 +6,8 @@
     "start": "node index.js"
   },
   "dependencies": {
-    "@aadhixd777/baileys": "^v7.0.0-rc.9",
+    "@aadhixd777/baileys": "latest",
+    "@rennzsync/baileys": "latest",
     "@adiwajshing/keyed-db": "^0.2.4",
     "@ffmpeg/ffmpeg": "^0.12.15",
     "@hapi/boom": "^10.0.1",
