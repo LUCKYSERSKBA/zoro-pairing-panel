@@ -10,8 +10,8 @@ COPY package*.json ./
 # Environment setting to skip python check for youtube downloader
 ENV YOUTUBE_DL_SKIP_PYTHON_CHECK=1
 
-# Install Node.js dependencies (shazamio must be removed from package.json)
-RUN npm install
+# Install Node.js dependencies with legacy peer deps to bypass version conflicts
+RUN npm install --legacy-peer-deps
 
 # Install Python's shazamio library for audio recognition
 RUN pip install --no-cache-dir shazamio --break-system-packages
