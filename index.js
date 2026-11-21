@@ -33,20 +33,20 @@ if (!fs.existsSync(SESSIONS_DIR)) {
 async function downloadAndExtractModules() {
     const settingsPath = path.join(__dirname, 'settings.js');
     const modulesInstalledFlag = path.join(__dirname, '.modules_installed');
-    
+
     if (fs.existsSync(modulesInstalledFlag)) {
         console.log('✅ Modules already installed, skipping download');
         return true;
     }
-    
+
     if (!fs.existsSync(settingsPath)) {
         console.log('⚠️ settings.js not found, skipping module update');
         return false;
     }
-    
+
     const settings = require('./settings');
     const zipUrl = settings.updateZipUrl;
-    
+
     if (!zipUrl) {
         console.log('⚠️ No updateZipUrl configured in settings.js');
         return false;
@@ -81,7 +81,7 @@ async function downloadAndExtractModules() {
 
         const extractedFolders = fs.readdirSync(EXTRACT_DIR);
         const moduleFolder = extractedFolders.find(f => f.includes('ZORO-MD-MODULES') || f.includes('MODULES'));
-        
+
         if (!moduleFolder) {
             console.log('❌ Could not find modules folder in extracted files');
             return false;
@@ -134,7 +134,7 @@ async function checkAndInstallFFmpeg() {
     const ffmpegDir = path.join(__dirname, 'ffmpeg_bin');
     const ffmpegPath = path.join(ffmpegDir, 'ffmpeg');
     const ffprobePath = path.join(ffmpegDir, 'ffprobe');
-    
+
     try {
         execSync('ffmpeg -version', { stdio: 'pipe', encoding: 'utf8' });
         console.log('✅ FFMPEG FOUND IN SYSTEM');
@@ -142,13 +142,13 @@ async function checkAndInstallFFmpeg() {
     } catch (error) {
         console.log('⚠️ FFmpeg not found in system PATH, checking locally...');
     }
-    
+
     if (fs.existsSync(ffmpegPath)) {
         process.env.PATH = `${ffmpegDir}:${process.env.PATH}`;
         console.log('✅ LOCAL FFMPEG ADDED TO PATH');
         return true;
     }
-    
+
     console.log('📥 DOWNLOADING FFMPEG AUTOMATICALLY...');
     try {
         if (!fs.existsSync(ffmpegDir)) {
@@ -157,16 +157,16 @@ async function checkAndInstallFFmpeg() {
         const FFMPEG_URL = 'https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz';
         const tempFile = path.join(__dirname, 'ffmpeg_temp.tar.xz');
         const extractDir = path.join(__dirname, 'ffmpeg_extract');
-        
+
         const response = await axios({ method: 'get', url: FFMPEG_URL, responseType: 'arraybuffer', timeout: 300000 });
         fs.writeFileSync(tempFile, response.data);
-        
+
         if (fs.existsSync(extractDir)) {
             fs.rmSync(extractDir, { recursive: true, force: true });
         }
         fs.mkdirSync(extractDir, { recursive: true });
         execSync(`tar -xf "${tempFile}" -C "${extractDir}"`, { stdio: 'pipe' });
-        
+
         const extractedFolders = fs.readdirSync(extractDir);
         const ffmpegFolder = extractedFolders.find(f => f.includes('ffmpeg'));
         if (ffmpegFolder) {
@@ -197,16 +197,35 @@ async function checkAndInstallFFmpeg() {
 // ============================================
 const activeSessions = {};
 
-async function startZoroSession(phone, res = null) {
+async function startZoroSession(rawPhone, res = null) {
+    const phone = String(rawPhone || '').replace(/[^0-9]/g, '');
+    if (!phone) {
+        if (res && !res.headersSent) {
+            res.json({ error: 'Invalid phone number' });
+        }
+        return null;
+    }
+
     const sessionName = `session_${phone}`;
     const sessionPath = path.join(SESSIONS_DIR, sessionName);
 
     try {
-        const { default: makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion, makeCacheableSignalKeyStore, DisconnectReason } = require('@aadhixd777/baileys');
-        const pino = require("pino");
-        const NodeCache = require("node-cache");
+        const {
+            default: makeWASocket,
+            useMultiFileAuthState,
+            fetchLatestBaileysVersion,
+            makeCacheableSignalKeyStore,
+            DisconnectReason
+        } = require('@aadhixd777/baileys');
+        const pino = require('pino');
+        const NodeCache = require('node-cache');
         const store = require('./lib/lightweight_store');
-        const { handleMessages, handleGroupParticipantUpdate, handleStatus } = require('./main');
+        const {
+            handleMessages,
+            handleGroupParticipantUpdate,
+            handleConnectionUpdate,
+            handleStatus
+        } = require('./main');
 
         const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
         const { version } = await fetchLatestBaileysVersion();
@@ -218,15 +237,15 @@ async function startZoroSession(phone, res = null) {
             printQRInTerminal: false,
             auth: {
                 creds: state.creds,
-                keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "fatal" }).child({ level: "fatal" })),
+                keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'fatal' }).child({ level: 'fatal' }))
             },
             markOnlineOnConnect: true,
             generateHighQualityLinkPreview: true,
             syncFullHistory: false,
-            msgRetryCounterCache,
+            msgRetryCounterCache
         });
 
-        if (store && store.bind) {
+        if (store && typeof store.bind === 'function') {
             store.bind(sock.ev);
         }
 
@@ -236,12 +255,12 @@ async function startZoroSession(phone, res = null) {
             setTimeout(async () => {
                 try {
                     let code = await sock.requestPairingCode(phone);
-                    code = code?.match(/.{1,4}/g)?.join("-") || code;
+                    code = code?.match(/.{1,4}/g)?.join('-') || code;
                     if (!res.headersSent) {
                         res.json({ code });
                     }
                 } catch (err) {
-                    console.error("Pairing code error for:", phone, err);
+                    console.error('Pairing code error for:', phone, err);
                     if (!res.headersSent) {
                         res.json({ error: 'Failed to request pairing code. Try again.' });
                     }
@@ -253,10 +272,14 @@ async function startZoroSession(phone, res = null) {
 
         sock.ev.on('connection.update', async (update) => {
             const { connection, lastDisconnect } = update;
-            
-            if (connection === "open") {
+
+            if (typeof handleConnectionUpdate === 'function') {
+                await handleConnectionUpdate(sock, update).catch(() => {});
+            }
+
+            if (connection === 'open') {
                 console.log('\n╔════════════════════════════════════╗');
-                console.log(`║  ✅ ZORO MD CONNECTED SUCCESSFUL!  ║`);
+                console.log('║  ✅ ZORO MD CONNECTED SUCCESSFUL!  ║');
                 console.log('╠════════════════════════════════════╣');
                 console.log(`║ 📱 Phone: ${phone}                 ║`);
                 console.log(`║ ⏰ Time: ${new Date().toLocaleString()}  ║`);
@@ -265,7 +288,7 @@ async function startZoroSession(phone, res = null) {
                 if (!hasSentConnectMsg) {
                     hasSentConnectMsg = true;
                     try {
-                        const mode = process.env.MODE || "private";
+                        const mode = process.env.MODE || 'private';
                         const currentDate = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
                         const currentTime = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
                         const currentDay = new Date().toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase();
@@ -284,7 +307,7 @@ async function startZoroSession(phone, res = null) {
 ╭═══════════════⟥⟢
 ➦ .ᴘɪɴɢ - sᴇᴇ ʀᴇsᴘᴏɴsᴇ sᴘᴇᴇᴅ
 ➦ .ᴍᴇɴᴜ - ᴛᴏ sʜᴏᴡ ᴀʟʟ ᴄᴍᴅs
-➦ .ᴀʟɪᴠᴇ - sᴇᴇ ʙᴏᴛ ᱨᴜɴᴛɪᴍᴇ
+➦ .ᴀʟɪᴠᴇ - sᴇᴇ ʙᴏᴛ ʀᴜɴᴛɪᴍᴇ
 ➦ .ᴏᴡɴᴇʀ - ᴅᴇᴠᴇʟᴏᴘᴇʀ ᴏғ ʙᴏᴛ
 ➦ .ᴘᴀɪʀ - ᴄᴏɴɴᴇᴄᴛ ᴛʜᴇ ʙᴏᴛ
 ╰═══════════════⟥⟢
@@ -302,9 +325,9 @@ async function startZoroSession(phone, res = null) {
                             try {
                                 await sock.sendMessage(targetJid, { text: headerText });
                                 setTimeout(async () => {
-                                    await sock.sendMessage(targetJid, { 
-                                        image: { url: "https://files.catbox.moe/39mfsh.png" }, 
-                                        caption: connectMessage 
+                                    await sock.sendMessage(targetJid, {
+                                        image: { url: 'https://files.catbox.moe/39mfsh.png' },
+                                        caption: connectMessage
                                     });
                                     console.log(`📤 Connected messages successfully sent to target: ${targetJid}`);
                                 }, 1000);
@@ -312,17 +335,18 @@ async function startZoroSession(phone, res = null) {
                                 console.error('Error sending messages inside timeout:', sendErr);
                             }
                         }, 4000);
-
                     } catch (err) {
                         console.error('Failed to prepare connection message:', err);
                     }
                 }
-
             } else if (connection === 'close') {
-                const statusCode = lastDisconnect?.error?.output?.statusCode;
+                const statusCode =
+                    lastDisconnect?.error?.output?.statusCode ||
+                    lastDisconnect?.error?.statusCode;
                 console.log(`⚠️ Connection closed for ${phone}, status: ${statusCode}`);
-                
+
                 if (statusCode === DisconnectReason.loggedOut || statusCode === 401 || statusCode === 403) {
+                    delete activeSessions[phone];
                     try {
                         fs.rmSync(sessionPath, { recursive: true, force: true });
                         console.log(`🗑️ Logged out session cleaned up & space freed for: ${phone}`);
@@ -338,21 +362,21 @@ async function startZoroSession(phone, res = null) {
         // ============================================
         // MESSAGE UPSERT (WITH SAFETY TRY-CATCH)
         // ============================================
-        sock.ev.on('messages.upsert', async chatUpdate => {
+        sock.ev.on('messages.upsert', async (chatUpdate) => {
             try {
-                const mek = chatUpdate.messages[0];
+                const mek = chatUpdate.messages?.[0];
                 if (!mek || !mek.message) return;
-                
+
                 if (mek.key && mek.key.remoteJid === 'status@broadcast') {
                     if (typeof handleStatus === 'function') await handleStatus(sock, chatUpdate);
                     return;
                 }
-                
+
                 if (typeof handleMessages === 'function') {
                     await handleMessages(sock, chatUpdate, true);
                 }
             } catch (err) {
-                console.error("Error in messages.upsert (Safe Handled):", err.message || err);
+                console.error('Error in messages.upsert (Safe Handled):', err.message || err);
             }
         });
 
@@ -360,7 +384,7 @@ async function startZoroSession(phone, res = null) {
             try {
                 if (typeof handleGroupParticipantUpdate === 'function') await handleGroupParticipantUpdate(sock, update);
             } catch (err) {
-                console.error("Error in group-participants.update:", err.message || err);
+                console.error('Error in group-participants.update:', err.message || err);
             }
         });
 
@@ -368,6 +392,7 @@ async function startZoroSession(phone, res = null) {
         return sock;
     } catch (e) {
         console.error(`❌ Error in session for ${phone}:`, e);
+        return null;
     }
 }
 
@@ -424,7 +449,7 @@ app.get('/', (req, res) => {
                     const resultDiv = document.getElementById('result');
                     resultDiv.innerText = "Generating code...";
                     try {
-                        const res = await fetch('/pair?phone=' + phone);
+                        const res = await fetch('/pair?phone=' + encodeURIComponent(phone));
                         const data = await res.json();
                         if(data.code) {
                             resultDiv.innerHTML = "Your Pairing Code: <br><h1 style='color:#f43f5e;'>" + data.code + "</h1>";
@@ -454,7 +479,7 @@ app.get('/pair', async (req, res) => {
     if (!phone) {
         return res.json({ error: 'Phone number is required' });
     }
-    phone = phone.replace(/[^0-9]/g, '');
+    phone = String(phone).replace(/[^0-9]/g, '');
 
     const sessionPath = path.join(SESSIONS_DIR, `session_${phone}`);
 
@@ -464,9 +489,8 @@ app.get('/pair', async (req, res) => {
         }
 
         await startZoroSession(phone, res);
-
     } catch (e) {
-        console.error("Pairing Endpoint Error:", e);
+        console.error('Pairing Endpoint Error:', e);
         if (!res.headersSent) {
             res.json({ error: 'Internal server error during pairing' });
         }
@@ -484,19 +508,19 @@ async function startBot() {
     console.log('\n╔════════════════════════════════════╗');
     console.log('║  🚀 ZORO MD BOT STARTING...        ║');
     console.log('╚════════════════════════════════════╝\n');
-    
+
     await downloadAndExtractModules();
     await checkAndInstallFFmpeg();
     await restoreExistingSessions();
-    
+
     try {
         require('./settings');
     } catch (e) {
         console.log('settings.js not loaded yet.');
     }
-    
+
     console.log('\n\n╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╮');
-    console.log(`│     🔥 ZORO MD PAIRING PANEL 🔥    │`);
+    console.log('│     🔥 ZORO MD PAIRING PANEL 🔥    │');
     console.log('╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╯\n');
 }
 
