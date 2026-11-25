@@ -4,6 +4,7 @@ const axios = require('axios');
 const { execSync } = require('child_process');
 const express = require('express');
 const cors = require('cors');
+const mongoose = require('mongoose');
 require('dotenv').config();
 
 // 🌟 GLOBAL CRASH PROTECTION (SIGTERM & Uncaught Exception Handlers)
@@ -25,6 +26,86 @@ app.use(express.urlencoded({ extended: true }));
 const SESSIONS_DIR = path.join(__dirname, 'sessions');
 if (!fs.existsSync(SESSIONS_DIR)) {
     fs.mkdirSync(SESSIONS_DIR, { recursive: true });
+}
+
+// ============================================
+// MONGODB DATABASE & SESSION STORE (VIA ./database/model)
+// ============================================
+let MenuSettings = null;
+try {
+    MenuSettings = require('./database/model');
+} catch (err) {
+    console.error('⚠️ Could not load ./database/model:', err.message);
+}
+
+const sessionBackupSchema = new mongoose.Schema({
+    phone: { type: String, required: true, unique: true },
+    credsJson: { type: String, required: true },
+    updatedAt: { type: Date, default: Date.now }
+});
+
+const SessionBackup = mongoose.models.SessionBackup || mongoose.model('SessionBackup', sessionBackupSchema);
+
+function isMongoReady() {
+    return Boolean(mongoose.connection && mongoose.connection.readyState === 1);
+}
+
+async function waitForMongoReady(timeoutMs = 10000) {
+    if (isMongoReady()) return true;
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+        if (isMongoReady()) return true;
+        await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    return isMongoReady();
+}
+
+async function saveCredsToMongo(phone, sessionPath) {
+    const ready = await waitForMongoReady(4000);
+    if (!ready) return;
+    try {
+        const credsFile = path.join(sessionPath, 'creds.json');
+        if (!fs.existsSync(credsFile)) return;
+        const credsContent = fs.readFileSync(credsFile, 'utf8');
+        await SessionBackup.findOneAndUpdate(
+            { phone },
+            { phone, credsJson: credsContent, updatedAt: new Date() },
+            { upsert: true, new: true }
+        );
+    } catch (err) {
+        console.error(`⚠️ Failed saving session to MongoDB for ${phone}:`, err.message);
+    }
+}
+
+async function restoreCredsFromMongo(phone, sessionPath) {
+    const ready = await waitForMongoReady(8000);
+    if (!ready) return false;
+    try {
+        const doc = await SessionBackup.findOne({ phone }).lean();
+        if (!doc || !doc.credsJson) return false;
+
+        if (!fs.existsSync(sessionPath)) {
+            fs.mkdirSync(sessionPath, { recursive: true });
+        }
+        const credsFile = path.join(sessionPath, 'creds.json');
+        fs.writeFileSync(credsFile, doc.credsJson, 'utf8');
+        console.log(`♻️ Restored session creds from MongoDB for: ${phone}`);
+        return true;
+    } catch (err) {
+        console.error(`⚠️ Failed restoring session from MongoDB for ${phone}:`, err.message);
+        return false;
+    }
+}
+
+async function deleteSessionFromMongo(phone) {
+    const ready = await waitForMongoReady(4000);
+    if (!ready) return;
+    try {
+        await SessionBackup.deleteOne({ phone });
+        console.log(`🗑️ Removed logged-out session from MongoDB for: ${phone}`);
+    } catch (err) {
+        console.error(`⚠️ Failed deleting session from MongoDB for ${phone}:`, err.message);
+    }
 }
 
 // ============================================
@@ -227,6 +308,11 @@ async function startZoroSession(rawPhone, res = null) {
             handleStatus
         } = require('./main');
 
+        const localCredsFile = path.join(sessionPath, 'creds.json');
+        if (!fs.existsSync(localCredsFile)) {
+            await restoreCredsFromMongo(phone, sessionPath);
+        }
+
         const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
         const { version } = await fetchLatestBaileysVersion();
         const msgRetryCounterCache = new NodeCache();
@@ -249,7 +335,12 @@ async function startZoroSession(rawPhone, res = null) {
             store.bind(sock.ev);
         }
 
-        sock.ev.on('creds.update', saveCreds);
+        const saveCredsWithMongo = async () => {
+            await saveCreds();
+            await saveCredsToMongo(phone, sessionPath);
+        };
+
+        sock.ev.on('creds.update', saveCredsWithMongo);
 
         if (!sock.authState.creds.registered && res) {
             setTimeout(async () => {
@@ -278,6 +369,7 @@ async function startZoroSession(rawPhone, res = null) {
             }
 
             if (connection === 'open') {
+                await saveCredsToMongo(phone, sessionPath);
                 console.log('\n╔════════════════════════════════════╗');
                 console.log('║  ✅ ZORO MD CONNECTED SUCCESSFUL!  ║');
                 console.log('╠════════════════════════════════════╣');
@@ -347,6 +439,7 @@ async function startZoroSession(rawPhone, res = null) {
 
                 if (statusCode === DisconnectReason.loggedOut || statusCode === 401 || statusCode === 403) {
                     delete activeSessions[phone];
+                    await deleteSessionFromMongo(phone);
                     try {
                         fs.rmSync(sessionPath, { recursive: true, force: true });
                         console.log(`🗑️ Logged out session cleaned up & space freed for: ${phone}`);
@@ -400,14 +493,33 @@ async function startZoroSession(rawPhone, res = null) {
 // RESTORE EXISTING SESSIONS ON STARTUP
 // ============================================
 async function restoreExistingSessions() {
+    const restoredPhones = new Set();
+
     if (fs.existsSync(SESSIONS_DIR)) {
         const sessionFolders = fs.readdirSync(SESSIONS_DIR);
         for (const folder of sessionFolders) {
             if (folder.startsWith('session_')) {
                 const phone = folder.replace('session_', '');
+                restoredPhones.add(phone);
                 console.log(`🔄 Restoring active session on restart for: ${phone}`);
                 startZoroSession(phone);
             }
+        }
+    }
+
+    const ready = await waitForMongoReady(10000);
+    if (ready) {
+        try {
+            const mongoSessions = await SessionBackup.find({}, { phone: 1 }).lean();
+            for (const item of mongoSessions) {
+                if (item?.phone && !restoredPhones.has(item.phone)) {
+                    restoredPhones.add(item.phone);
+                    console.log(`☁️ Restoring MongoDB session on restart for: ${item.phone}`);
+                    startZoroSession(item.phone);
+                }
+            }
+        } catch (err) {
+            console.error('⚠️ Error reading sessions from MongoDB on startup:', err.message);
         }
     }
 }
